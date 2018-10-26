@@ -11,6 +11,8 @@ import (
 	"bytes"
 	"encoding/json"
 
+	//"strings"
+
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gocraft/web"
 	"github.com/jmoiron/sqlx"
@@ -61,10 +63,10 @@ func main() {
 		log.Printf(err.Error())
 		return
 	}
-	lconn, err1 := sqlx.Connect("mysql", config.DBConnect)
+	lconn, err := sqlx.Connect("mysql", config.DBConnect)
 	Conn = lconn
-	if err1 != nil {
-		log.Printf(err1.Error())
+	if err != nil {
+		log.Printf(err.Error())
 		return
 	}
 
@@ -74,7 +76,11 @@ func main() {
 
 	fmt.Println("Запускаемся. Слушаем порт 8080")
 
-	http.ListenAndServe(":8080", router)
+	err = http.ListenAndServe(":8080", router)
+	if err != nil {
+		log.Printf(err.Error())
+		return
+	}
 
 }
 
@@ -99,11 +105,15 @@ func (c *Context) GetToken(iWrt web.ResponseWriter, iReq *web.Request, next web.
 func (c *Context) Reg(iWrt web.ResponseWriter, iReq *web.Request) {
 	log.Println("Регистрация")
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(iReq.Body)
+	_, err := buf.ReadFrom(iReq.Body)
+	if err != nil {
+		log.Printf(err.Error())
+		return
+	}
 	fmt.Println(buf.String())
 	var newUser pReg
 
-	err := json.Unmarshal(buf.Bytes(), &newUser)
+	err = json.Unmarshal(buf.Bytes(), &newUser)
 	if err != nil {
 		log.Printf(err.Error())
 		return
@@ -111,19 +121,18 @@ func (c *Context) Reg(iWrt web.ResponseWriter, iReq *web.Request) {
 	if c.AdminToken == newUser.Token {
 		fmt.Println("Началась бд")
 		var user sUser
-		//user := new(sUser)
 		err = Conn.Get(&user, "select * from users where login=?", newUser.Login)
 		/*if err != nil {
 			log.Println(err.Error())
 			return
 		}*/
+
 		if err != nil && (err.Error() != "sql: no rows in result set") {
 			log.Printf(err.Error())
 			return
 		}
-		//fmt.Println("Нил?")
 
-		if err.Error() == "sql: no rows in result set" {
+		if err != nil {
 			_, err = Conn.Exec("insert into users (login, hash) values (?,?)", newUser.Login, newUser.Hash)
 			if err != nil {
 				log.Printf(err.Error())
@@ -150,11 +159,15 @@ func (c *Context) Auth(iWrt web.ResponseWriter, iReq *web.Request) {
 	lData := new(bytes.Buffer)
 	var user sUser
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(iReq.Body)
+	_, err := buf.ReadFrom(iReq.Body)
+	if err != nil {
+		log.Printf(err.Error())
+		return
+	}
 	fmt.Println(buf.String())
 	var p pAuth
 
-	err := json.Unmarshal(buf.Bytes(), &p)
+	err = json.Unmarshal(buf.Bytes(), &p)
 	if err != nil {
 		log.Printf(err.Error())
 		return
