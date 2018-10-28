@@ -8,7 +8,7 @@ import (
 	"log"
 	"net/http"
 
-	"bytes"
+	//"bytes"
 	"encoding/json"
 
 	//"strings"
@@ -21,8 +21,14 @@ import (
 
 const conf = "config.txt"
 
+type httpError struct {
+	Code int    `json:"code,omitempty"`
+	Text string `json:"text,omitempty"`
+}
 type Context struct {
-	AdminToken string
+	Err      *httpError `json:"error,omitempty"`
+	Response string     `json:"response,omitempty"`
+	Data     string     `json:"data,omitempty"`
 }
 
 type sUser struct {
@@ -49,16 +55,11 @@ type sConfig struct {
 	AdminToken string `json:"Token"`
 }
 
+var config sConfig
 var Conn *sqlx.DB
 
 func main() {
-	file, err := ioutil.ReadFile(conf)
-	if err != nil {
-		log.Printf(err.Error())
-		return
-	}
-	var config sConfig
-	err = json.Unmarshal(file, &config)
+	err := LoadConfig()
 	if err != nil {
 		log.Printf(err.Error())
 		return
@@ -70,8 +71,8 @@ func main() {
 		return
 	}
 
-	router := web.New(Context{}).Middleware(web.LoggerMiddleware).Middleware(web.ShowErrorsMiddleware)
-	router.Subrouter(Context{}, "/").Middleware((*Context).GetToken).Post("/reg", (*Context).Reg)
+	router := web.New(Context{}).Middleware(web.LoggerMiddleware).Middleware((*Context).ErrorHandler)
+	router.Subrouter(Context{}, "/").Post("/reg", (*Context).Reg)
 	router.Subrouter(Context{}, "/").Post("/auth", (*Context).Auth)
 
 	fmt.Println("Запускаемся. Слушаем порт 8080")
@@ -84,91 +85,75 @@ func main() {
 
 }
 
-func (c *Context) GetToken(iWrt web.ResponseWriter, iReq *web.Request, next web.NextMiddlewareFunc) {
-	log.Println("Читаю токен")
+func LoadConfig() error {
 	file, err := ioutil.ReadFile(conf)
 	if err != nil {
 		log.Printf(err.Error())
-		return
+		return err
 	}
-	var config sConfig
 	err = json.Unmarshal(file, &config)
 	if err != nil {
 		log.Printf(err.Error())
-		return
+		return err
 	}
-	c.AdminToken = config.AdminToken
-	next(iWrt, iReq)
-	return
+	return nil
 }
 
 func (c *Context) Reg(iWrt web.ResponseWriter, iReq *web.Request) {
-	log.Println("Регистрация")
-	buf := new(bytes.Buffer)
-	_, err := buf.ReadFrom(iReq.Body)
-	if err != nil {
-		log.Printf(err.Error())
-		return
-	}
-	fmt.Println(buf.String())
+	buf := json.NewDecoder(iReq.Body)
+	defer iReq.Body.Close()
+
 	var newUser pReg
+	err := buf.Decode(&newUser)
 
-	err = json.Unmarshal(buf.Bytes(), &newUser)
 	if err != nil {
+		c.SetError(400, "Невозможно преобразовать тело запроса в json")
 		log.Printf(err.Error())
 		return
 	}
-	if c.AdminToken == newUser.Token {
-		fmt.Println("Началась бд")
-		var user sUser
-		err = Conn.Get(&user, "select * from users where login=?", newUser.Login)
-		/*if err != nil {
-			log.Println(err.Error())
-			return
-		}*/
-
-		if err != nil && (err.Error() != "sql: no rows in result set") {
-			log.Printf(err.Error())
-			return
-		}
-
-		if err != nil {
-			_, err = Conn.Exec("insert into users (login, hash) values (?,?)", newUser.Login, newUser.Hash)
-			if err != nil {
-				log.Printf(err.Error())
-				return
-			}
-			resp, err := json.Marshal(newUser.Login)
-			if err != nil {
-				log.Printf(err.Error())
-				return
-			}
-			_, err = iWrt.Write(resp)
-			return
-
-		}
-		iWrt.WriteHeader(http.StatusBadRequest)
+	if config.AdminToken != newUser.Token {
+		c.SetError(403, "Неверный хэш администратора")
+		log.Println("Токены не совпали")
 		return
 	}
-	log.Println("Токены не совпали")
-	iWrt.WriteHeader(http.StatusBadRequest)
-	return
+
+	fmt.Println("Началась бд")
+	user := []sUser{}
+	err = Conn.Select(&user, "select * from users where login=?", newUser.Login)
+
+	if err != nil {
+		c.SetError(500, "Ошибка базы данных")
+		log.Printf(err.Error())
+		return
+	}
+
+	if len(user) == 0 {
+		_, err = Conn.Exec("insert into users (login, hash) values (?,?)", newUser.Login, newUser.Hash)
+		if err != nil {
+			log.Printf(err.Error())
+			c.SetError(500, "Ошибка базы данных")
+			return
+		}
+		c.Data = newUser.Login
+		return
+
+	} else {
+		c.SetError(401, "Такой пользователь уже существует")
+		return
+	}
 }
 
 func (c *Context) Auth(iWrt web.ResponseWriter, iReq *web.Request) {
-	lData := new(bytes.Buffer)
 	var user sUser
-	buf := new(bytes.Buffer)
-	_, err := buf.ReadFrom(iReq.Body)
-	if err != nil {
-		log.Printf(err.Error())
-		return
-	}
-	fmt.Println(buf.String())
+
+	buf := json.NewDecoder(iReq.Body)
+	defer iReq.Body.Close()
+
 	var p pAuth
 
-	err = json.Unmarshal(buf.Bytes(), &p)
+	err := buf.Decode(&p)
 	if err != nil {
+		c.SetError(400, "Невозможно преобразовать тело запроса в json")
 		log.Printf(err.Error())
 		return
 	}
@@ -176,6 +161,7 @@ func (c *Context) Auth(iWrt web.ResponseWriter, iReq *web.Request) {
 	fmt.Println(p.Login)
 	err = Conn.Get(&user, "select * from users where login=?", p.Login)
 	if err != nil {
+		c.SetError(401, "Неверный логин или пароль")
 		log.Printf(err.Error())
 		return
 	}
@@ -183,37 +169,63 @@ func (c *Context) Auth(iWrt web.ResponseWriter, iReq *web.Request) {
 
 		session, err := uuid.NewV4()
 		if err != nil {
+			c.SetError(500, "Не удалось создать сессию")
 			log.Printf(err.Error())
 			return
 		}
 		user.Session = session.String()
 		_, err = Conn.Exec("update users set session =? where id=?", user.Session, user.ID)
 		if err != nil {
+			c.SetError(500, "Не удалось создать сессию")
 			log.Printf(err.Error())
 			return
 		}
-		fmt.Println(user.Session)
-		jsn, err := json.Marshal(user.Session)
-		lData.Write(jsn)
+		c.Data = user.Session
 		if err != nil {
+			c.SetError(500, "Невозможно преобразовать ответ в json")
 			log.Printf(err.Error())
 			return
 		}
 	} else {
-		iWrt.WriteHeader(http.StatusForbidden)
-		lData.Write([]byte("{}"))
+		c.SetError(403, "Неверный логин или пароль")
+		return
 	}
-
-	fmt.Fprintln(iWrt, lData)
+	return
 }
 
-func readFile(iFileName string) string {
-	lData, err := ioutil.ReadFile(iFileName)
-	var lOut string
-	if err == nil {
-		lOut = string(lData)
+func (c *Context) ErrorHandler(iWrt web.ResponseWriter, iReq *web.Request, next web.NextMiddlewareFunc) {
+	next(iWrt, iReq)
+	if c.Err != nil {
+		iWrt.WriteHeader(c.Err.Code)
 	} else {
-		lOut = "404"
+		iWrt.WriteHeader(200)
 	}
-	return lOut
+	lData, err := json.Marshal(c)
+	if err != nil {
+		iWrt.WriteHeader(500)
+		fmt.Fprintln(iWrt, "")
+	}
+	fmt.Fprintln(iWrt, string(lData))
+}
+
+func (c *Context) SetError(code int, text string) {
+	if text != "" {
+		c.Err = new(httpError)
+		c.Err.Code = code
+		c.Err.Text = text
+	}
+}
+func (c *Context) SendStatus(code int, text string, iWrt web.ResponseWriter) {
+	if c.Err != nil {
+		iWrt.WriteHeader(c.Err.Code)
+	} else {
+		iWrt.WriteHeader(200)
+	}
+	lData, err := json.Marshal(c)
+	if err != nil {
+		fmt.Fprintln(iWrt, "Все пропало")
+		return
+	}
+	fmt.Println(string(lData))
+	fmt.Fprintln(iWrt, string(lData))
 }
