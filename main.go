@@ -134,7 +134,7 @@ func (c *Context) Reg(iWrt web.ResponseWriter, iReq *web.Request) {
 			c.SetError(500, "Ошибка базы данных")
 			return
 		}
-		c.Data = newUser.Login
+		c.Response = newUser.Login
 		return
 
 	} else {
@@ -180,7 +180,7 @@ func (c *Context) Auth(iWrt web.ResponseWriter, iReq *web.Request) {
 			log.Printf(err.Error())
 			return
 		}
-		c.Data = user.Session
+		c.Response = user.Session
 		if err != nil {
 			c.SetError(500, "Невозможно преобразовать ответ в json")
 			log.Printf(err.Error())
